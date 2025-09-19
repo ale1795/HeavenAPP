@@ -1,6 +1,5 @@
 # app.py
 import io
-import calendar
 import requests
 import numpy as np
 import pandas as pd
@@ -19,7 +18,10 @@ from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image,
 # Configuración general
 # =========================
 st.set_page_config(page_title="Dashboard Evolucion de APP Heaven", page_icon="📊", layout="wide")
+
+# Logo e imagen del repo (usaremos la misma para portada e imagen destacada de PDF)
 LOGO_URL = "https://raw.githubusercontent.com/ale1795/HeavenAPP/main/HVN%20central%20blanco.png"
+
 MESES_LARGO = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 MESES_ABR   = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"]
 
@@ -31,6 +33,7 @@ def fmt_fecha_es(ts, abr=True):
 
 st.markdown("<h1 style='text-align:center'>📊 Dashboard Evolucion de APP Heaven</h1>", unsafe_allow_html=True)
 st.markdown(f"<div style='text-align:center;margin-bottom:6px'><img src='{LOGO_URL}' width='120' /></div>", unsafe_allow_html=True)
+st.caption("Monitoreo de Impresiones, Descargas y Lanzamientos con comparativos vs. período anterior y YoY.")
 st.divider()
 
 # =========================
@@ -127,22 +130,17 @@ st.info(f"📅 Datos disponibles: **{data_min}** → **{data_max}**")
 hoy = pd.Timestamp(data_max)
 
 col_gran, col_anio, col_mes, col_sem, col_dia = st.columns([1.2, 1, 1, 1, 1.3], vertical_alignment="bottom")
-
 with col_gran:
     gran = st.radio("Granularidad", ["Día","Semana","Mes","Año"], horizontal=True)
-
 with col_anio:
     años = sorted(df_all["Año"].unique())
     anio_sel = st.selectbox("Año", años, index=len(años)-1)
-
 with col_mes:
     mes_opc = ["Todos"] + MESES_LARGO
     mes_sel = st.selectbox("Mes", mes_opc, index=0)
-
 with col_sem:
     sem_disp = sorted(df_all[df_all["Año"]==anio_sel]["Semana"].unique())
     sem_sel = st.selectbox("Semana (opcional)", ["Todas"] + list(map(int, sem_disp)), index=0)
-
 with col_dia:
     dias_anio = df_all[df_all["Año"]==anio_sel]["Fecha"].dt.date.unique()
     dia_sel = st.selectbox("Día (opcional)", ["Ninguno"] + sorted(map(str, dias_anio)), index=0)
@@ -156,10 +154,7 @@ cmp_yoy   = st.sidebar.toggle("📊 Comparar YoY (mismo período año anterior)"
 if dia_sel != "Ninguno":
     ini_r = fin_r = pd.to_datetime(dia_sel).date()
 elif sem_sel != "Todas":
-    base = pd.Timestamp(anio_sel, 1, 4)  # ISO week anchor
-    semana_num = int(sem_sel)
-    # Truco simple: tomamos la primera semana del año y desplazamos
-    sem_ini = pd.to_datetime(f"{anio_sel}-W{semana_num:02d}-1")
+    sem_ini = pd.to_datetime(f"{anio_sel}-W{int(sem_sel):02d}-1")
     sem_fin = sem_ini + pd.Timedelta(days=6)
     ini_r, fin_r = sem_ini.date(), sem_fin.date()
 elif mes_sel != "Todos":
@@ -212,7 +207,7 @@ metricas = ["Impresiones","Descargas","Lanzamientos"]
 agg = agregar(df, gran, metricas)
 
 # =========================
-# Helpers de comparativa (prev & YoY)
+# Helpers comparativas
 # =========================
 def periodo_anterior(ini: pd.Timestamp, fin: pd.Timestamp, gran: str):
     if gran == "Año":
@@ -261,19 +256,32 @@ delta_lnc = pct(tot_lnc, sum_prev["Lanzamientos"])
 delta_conv = pct(conv, conv_prev) if pd.notna(conv_prev) else np.nan
 delta_uso  = pct(uso,  uso_prev)  if pd.notna(uso_prev)  else np.nan
 
-# Período YoY (opcional)
+# Período YoY (opcional) — armado general para PDF
+yoy_block = None
 if cmp_yoy:
     ini_yoy, fin_yoy = periodo_yoy(pd.to_datetime(ini_r), pd.to_datetime(fin_r))
     ini_yoy = max(ini_yoy.date(), data_min); fin_yoy = min(fin_yoy.date(), data_max)
     sum_yoy, conv_yoy, uso_yoy = sumar_rango(df_all, ini_yoy, fin_yoy)
+
     delta_imp_yoy = pct(tot_imp, sum_yoy["Impresiones"])
     delta_dwn_yoy = pct(tot_dwn, sum_yoy["Descargas"])
     delta_lnc_yoy = pct(tot_lnc, sum_yoy["Lanzamientos"])
     delta_conv_yoy = pct(conv, conv_yoy) if pd.notna(conv_yoy) else np.nan
     delta_uso_yoy  = pct(uso,  uso_yoy)  if pd.notna(uso_yoy)  else np.nan
 
+    yoy_block = {
+        "RangoYoY": (ini_yoy, fin_yoy),
+        "Filas": [
+            ("Impresiones",        tot_imp, sum_yoy["Impresiones"], delta_imp_yoy),
+            ("Descargas",          tot_dwn, sum_yoy["Descargas"],   delta_dwn_yoy),
+            ("Lanzamientos",       tot_lnc, sum_yoy["Lanzamientos"],delta_lnc_yoy),
+            ("Conversión (%)",     conv,    conv_yoy if pd.notna(conv_yoy) else 0, delta_conv_yoy),
+            ("Uso/instalación",    uso,     uso_yoy if pd.notna(uso_yoy) else 0,   delta_uso_yoy),
+        ]
+    }
+
 # =========================
-# KPIs con delta (prev) y YoY
+# KPIs + resumen
 # =========================
 c1,c2,c3,c4,c5 = st.columns(5)
 c1.metric("👀 Impresiones (período)", f"{tot_imp:,}", delta=f"{delta_imp:+.1f}%" if pd.notna(delta_imp) else "–", help="Oportunidades de instalación")
@@ -292,16 +300,19 @@ resumen = (
     f"vs. período anterior ({fmt_fecha_es(pd.to_datetime(ini_prev))} – {fmt_fecha_es(pd.to_datetime(fin_prev))})."
 )
 if cmp_yoy:
+    ini_yoy, fin_yoy = yoy_block["RangoYoY"]
+    # extraemos del bloque para describir
+    di = yoy_block["Filas"][0][3]; dd = yoy_block["Filas"][1][3]; dl = yoy_block["Filas"][2][3]
+    dc = yoy_block["Filas"][3][3]; du = yoy_block["Filas"][4][3]
     resumen += (
-        f"  |  **YoY:** Imp {chip(delta_imp_yoy)}, Desc {chip(delta_dwn_yoy)}, Lanz {chip(delta_lnc_yoy)}, "
-        f"Conv {chip(delta_conv_yoy)}, Uso {chip(delta_uso_yoy)} vs. "
-        f"{fmt_fecha_es(pd.to_datetime(ini_yoy))} – {fmt_fecha_es(pd.to_datetime(fin_yoy))}."
+        f"  |  **YoY:** Imp {chip(di)}, Desc {chip(dd)}, Lanz {chip(dl)}, "
+        f"Conv {chip(dc)}, Uso {chip(du)} vs. {fmt_fecha_es(pd.to_datetime(ini_yoy))} – {fmt_fecha_es(pd.to_datetime(fin_yoy))}."
     )
 st.info(resumen)
 
 st.caption(
     f"**Período:** {fmt_fecha_es(df['Fecha'].min())} – {fmt_fecha_es(df['Fecha'].max())} | "
-    f"**Granularidad:** {gran} | **Uso/instalación:** {uso:,.2f}"
+    f"**Granularidad:** {gran}"
 )
 
 # =========================
@@ -322,9 +333,9 @@ with tab1:
     if modo_guia:
         with st.expander("Cómo leer este gráfico"):
             st.markdown(f"""
-- El eje **X** muestra períodos por **{gran.lower()}** (cámbialo con los botones de arriba).
+- El eje **X** muestra períodos por **{gran.lower()}** (cámbialo arriba).
 - Las series comparan **Impresiones**, **Descargas** y **Lanzamientos**.
-- Revisa los **KPIs**: muestran variación vs. período anterior y (si activas) **YoY**.
+- Revisa los **KPIs**: variación vs. período anterior y (si activas) **YoY**.
 - Para ver un mes o semana específica, usa los selectores de arriba.
 """)
         st.success("Consejo: en **Por plataforma** ves si el cambio viene de iOS, Android u otra plataforma.")
@@ -382,9 +393,9 @@ with tab3:
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # =========================
-# PDF profesional (con imagen opcional)
+# PDF profesional (incluye imagen del repo y tabla YoY)
 # =========================
-def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_image_bytes=None):
+def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_image_bytes=None, yoy_block=None):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm, leftMargin=1.5*cm, rightMargin=1.5*cm)
     W, H = A4
@@ -408,7 +419,7 @@ def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_im
     story.append(Paragraph(subtitulo, styles["SubtituloReporte"]))
     story.append(Spacer(1, 0.4*cm))
 
-    # Si hay imagen adicional, la ponemos en una página aparte a tamaño grande
+    # Imagen destacada (usaremos la del repo si no se provee otra)
     if extra_image_bytes:
         story.append(Paragraph("Imagen destacada", styles["Heading2"]))
         story.append(Image(io.BytesIO(extra_image_bytes), width=W-3*cm, height=H/2))
@@ -448,7 +459,32 @@ def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_im
         story.append(Image(io.BytesIO(png), width=W-3*cm, height=H-5*cm))
         story.append(PageBreak())
 
-    # Tabla
+    # Tabla YoY (si aplica)
+    if yoy_block:
+        ini_y, fin_y = yoy_block["RangoYoY"]
+        story.append(Paragraph(
+            f"Comparativo YoY (mismo período del año anterior): "
+            f"{fmt_fecha_es(pd.to_datetime(ini_y))} – {fmt_fecha_es(pd.to_datetime(fin_y))}",
+            styles["Heading2"])
+        )
+        filas = [["Métrica", "Actual", "YoY", "Δ%"]]
+        for nombre, actual, yoy, delta in yoy_block["Filas"]:
+            filas.append([nombre,
+                          f"{actual:,.2f}" if isinstance(actual, float) else f"{actual:,}",
+                          f"{yoy:,.2f}"    if isinstance(yoy, float)    else f"{yoy:,}",
+                          f"{delta:+.1f}%" if pd.notna(delta) else "–"])
+        tbl_yoy = Table(filas, repeatRows=1, colWidths=[6*cm, 3*cm, 3*cm, 3*cm])
+        tbl_yoy.setStyle(TableStyle([
+            ('BACKGROUND',(0,0),(-1,0), colors.Color(0.12,0.12,0.12)),
+            ('TEXTCOLOR',(0,0),(-1,0), colors.white),
+            ('GRID',(0,0),(-1,-1), 0.25, colors.lightgrey),
+            ('ALIGN',(1,1),(-1,-1),'CENTER'),
+            ('FONT',(0,0),(-1,0),'Helvetica-Bold'),
+        ]))
+        story.append(tbl_yoy)
+        story.append(PageBreak())
+
+    # Tabla de datos (primeros 30)
     story.append(Paragraph("Datos agregados (primeros 30 registros)", styles["Heading2"]))
     head = list(tabla_df.columns)
     rows = [head] + tabla_df.head(30).astype(str).values.tolist()
@@ -477,67 +513,68 @@ with tab4:
     st.subheader("Generar Reporte PDF profesional")
     periodo_pdf = st.selectbox("Periodo de tabla PDF", ["Diario","Semanal","Mensual","Anual"])
 
-    # Imagen opcional para el PDF (portada/hero)
-    st.markdown("**Imagen opcional para el PDF** (elige una opción):")
-    col_u1, col_u2 = st.columns(2)
-    extra_img_bytes = None
-    with col_u1:
-        upimg = st.file_uploader("Subir imagen (PNG/JPG)", type=["png","jpg","jpeg"])
-        if upimg is not None:
-            extra_img_bytes = upimg.read()
-    with col_u2:
-        url_img = st.text_input("…o pegar URL de imagen")
-        if (not extra_img_bytes) and url_img:
-            try:
-                extra_img_bytes = requests.get(url_img, timeout=10).content
-            except Exception:
-                st.warning("No se pudo descargar la imagen de la URL.")
-
     def tabla_por_periodo(df_local, p):
         mapa = {"Diario":"Día","Semanal":"Semana","Mensual":"Mes","Anual":"Año"}
         t = agregar(df_local, mapa[p], metricas); t["Etiqueta"]=t["Etiqueta"].astype(str); return t
 
     tabla_pdf = tabla_por_periodo(df, periodo_pdf)
 
-    # Figuras para el PDF
+    # Figuras base (evolución del período actual)
     if gran in ["Día","Semana"]:
         fig1 = px.line(agg, x="Etiqueta", y=metricas, markers=True, title=f"Evolución por {gran.lower()}")
     else:
         fig1 = px.bar(agg, x="Etiqueta", y=metricas, barmode="group", title=f"Evolución por {gran.lower()}")
     fig1.update_xaxes(type="category"); fig1.update_layout(xaxis_title="", legend_title="")
 
-    # Si YoY está activo, añadimos un segundo gráfico comparativo YoY
+    # Gráficos YoY por métrica (si está activo)
+    figs_yoy = []
     if cmp_yoy:
-        # armamos agregación YoY del rango actual y del YoY
-        agg_actual = agg.copy()
         ini_yoy, fin_yoy = periodo_yoy(pd.to_datetime(ini_r), pd.to_datetime(fin_r))
         df_yoy = df_all[(df_all["Fecha"]>=pd.to_datetime(ini_yoy))&(df_all["Fecha"]<=pd.to_datetime(fin_yoy))]
         agg_yoy = agregar(df_yoy, gran, metricas)
-        # Para una comparación simple, graficamos barras lado a lado para Impresiones
-        comb = pd.DataFrame({
-            "Etiqueta": agg_actual["Etiqueta"],
-            "Actual_Impresiones": agg_actual["Impresiones"]
-        })
-        if len(agg_yoy)==len(agg_actual):
-            comb["YoY_Impresiones"] = agg_yoy["Impresiones"].values
-        else:
-            # fallback por si difiere el número de bins
-            comb["YoY_Impresiones"] = np.nan
-        fig2 = px.bar(comb, x="Etiqueta", y=["Actual_Impresiones","YoY_Impresiones"],
-                      barmode="group", title="Comparativo YoY (Impresiones)")
+
+        for m in metricas:
+            comb = pd.DataFrame({"Etiqueta": agg["Etiqueta"], "Actual": agg[m]})
+            if len(agg_yoy) == len(agg):
+                comb["YoY"] = agg_yoy[m].values
+            else:
+                comb["YoY"] = np.nan
+            figm = px.bar(comb, x="Etiqueta", y=["Actual","YoY"], barmode="group", title=f"Comparativo YoY • {m}")
+            figm.update_xaxes(type="category"); figm.update_layout(xaxis_title="", legend_title="")
+            figs_yoy.append(figm)
     else:
         fig2 = px.bar(agg, x="Etiqueta", y=metricas, barmode="group", title="Comparativa")
+        fig2.update_xaxes(type="category"); fig2.update_layout(xaxis_title="", legend_title="")
 
-    fig2.update_xaxes(type="category"); fig2.update_layout(xaxis_title="", legend_title="")
-
+    # Exportar figuras a PNG (kaleido)
     def plot_to_png(fig, w=1100, h=500, scale=2): 
         return fig.to_image(format="png", width=w, height=h, scale=scale)
 
-    pngs = [plot_to_png(fig1), plot_to_png(fig2)]
+    pngs = [plot_to_png(fig1)]
+    if cmp_yoy:
+        pngs.extend([plot_to_png(f) for f in figs_yoy])  # un gráfico por métrica
+    else:
+        pngs.append(plot_to_png(fig2))
+
+    # Imagen destacada: usamos la MISMA del repo por defecto
+    try:
+        extra_image_bytes = requests.get(LOGO_URL, timeout=10).content
+    except Exception:
+        extra_image_bytes = None
+
     kpis = {"imp": tot_imp, "dwn": tot_dwn, "lnc": tot_lnc, "conv": conv, "uso": uso}
     subtitulo = f"Rango: {fmt_fecha_es(df['Fecha'].min())} a {fmt_fecha_es(df['Fecha'].max())} • Granularidad: {gran}"
 
     if st.button("🖨️ Generar PDF"):
-        pdf_bytes = build_pdf(LOGO_URL, "📊 Dashboard Evolucion de APP Heaven", subtitulo, kpis, pngs, tabla_pdf, extra_image_bytes=extra_img_bytes)
+        pdf_bytes = build_pdf(
+            LOGO_URL,
+            "📊 Dashboard Evolucion de APP Heaven",
+            subtitulo,
+            kpis,
+            pngs,
+            tabla_pdf,
+            extra_image_bytes=extra_image_bytes,  # <- imagen del repo
+            yoy_block=yoy_block                    # <- tabla YoY
+        )
         st.download_button("📥 Descargar PDF", data=pdf_bytes,
                            file_name=f"reporte_{periodo_pdf.lower()}.pdf", mime="application/pdf")
