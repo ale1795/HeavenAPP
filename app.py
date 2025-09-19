@@ -304,3 +304,166 @@ with tab2:
     plat_map = {"Impresiones": imp_plat, "Descargas": dwn_plat, "Lanzamientos": lnc_plat}
     dfp = plat_map.get(met_seg)
     if dfp is None:
+        st.info("Tus CSV no traen columnas por plataforma.")
+    else:
+        # Alinear al rango y generar etiquetas
+        dfp = dfp.merge(df[["Fecha"]], on="Fecha", how="inner")
+        dfp["Año"] = dfp["Fecha"].dt.year
+        dfp["MesNum"]= dfp["Fecha"].dt.month
+        dfp["Semana"]= dfp["Fecha"].dt.isocalendar().week.astype(int)
+        dfp["Sem_ini"]= dfp["Fecha"]-pd.to_timedelta(dfp["Fecha"].dt.weekday, unit="D")
+        dfp["Sem_fin"]= dfp["Sem_ini"]+pd.Timedelta(days=6)
+        dfp["Etiqueta_dia"]= dfp["Fecha"].apply(lambda x: fmt_fecha_es(x, True))
+        dfp["Etiqueta_mes"]= dfp["MesNum"].map(lambda m: MESES_LARGO[m-1])+" "+dfp["Año"].astype(str)
+        dfp["Etiqueta_año"]= dfp["Año"].astype(str)
+        dfp["Etiqueta_sem"]= ("Sem "+dfp["Semana"].astype(str)+" ("+
+                              dfp["Sem_ini"].apply(lambda x: fmt_fecha_es(x, True))+" – "+
+                              dfp["Sem_fin"].apply(lambda x: fmt_fecha_es(x, True))+")")
+        by_map={"Día":["Año","MesNum","Fecha","Etiqueta_dia"],"Semana":["Año","Semana","Etiqueta_sem"],
+                "Mes":["Año","MesNum","Etiqueta_mes"],"Año":["Año","Etiqueta_año"]}
+        etiqueta = by_map[gran][-1]
+        agg_plat = dfp.groupby(by_map[gran], dropna=False).sum(numeric_only=True).reset_index().rename(columns={etiqueta:"Etiqueta"})
+        num_cols = [c for c in agg_plat.columns if c not in by_map[gran]+["Etiqueta","Sem_ini","Sem_fin","Fecha","MesNum","Año","Semana"]]
+        agg_plat = agg_plat.sort_values([c for c in ["Año","MesNum","Semana","Fecha"] if c in agg_plat.columns])
+
+        fig_stack = px.bar(agg_plat, x="Etiqueta", y=num_cols, barmode="stack", title=f"{met_seg} por {gran.lower()} (apilado)")
+        fig_stack.update_layout(xaxis_title="", legend_title="")
+        st.plotly_chart(fig_stack, use_container_width=True)
+
+        if len(agg_plat)>0:
+            ultimo = agg_plat.iloc[-1][num_cols]
+            st.plotly_chart(px.pie(values=ultimo.values, names=ultimo.index, title="Participación (último período)"),
+                            use_container_width=True)
+
+with tab3:
+    st.subheader("Descargar datos agregados")
+    periodo = st.selectbox("Periodo de tabla", ["Diario","Semanal","Mensual"])
+    def agregar_tabla(df, p):
+        return agregar(df, {"Diario":"Día","Semanal":"Semana","Mensual":"Mes"}[p], metricas)
+    tabla = agregar_tabla(df, periodo)
+    st.dataframe(tabla, use_container_width=True)
+    out = io.BytesIO()
+    with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+        tabla.to_excel(writer, index=False, sheet_name="Datos")
+    st.download_button("📥 Descargar Excel", data=out.getvalue(),
+                       file_name=f"datos_{periodo.lower()}.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+# ===== PDF profesional (kaleido + reportlab) =====
+def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df):
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm, leftMargin=1.5*cm, rightMargin=1.5*cm)
+    W, H = A4
+    styles = getSampleStyleSheet()
+
+    # Estilos con nombres únicos (evita KeyError)
+    if "TituloReporte" not in styles.byName:
+        styles.add(ParagraphStyle(name="TituloReporte", parent=styles["Heading1"], alignment=1, fontSize=18, spaceAfter=12))
+    if "SubtituloReporte" not in styles.byName:
+        styles.add(ParagraphStyle(name="SubtituloReporte", parent=styles["Heading2"], alignment=1, fontSize=11, textColor=colors.grey, spaceAfter=12))
+    if "KPITexto" not in styles.byName:
+        styles.add(ParagraphStyle(name="KPITexto", parent=styles["Normal"], alignment=1, fontSize=12))
+
+    story = []
+    # Portada con logo y título
+    try:
+        logo_bytes = requests.get(logo_url, timeout=10).content
+        story.append(Spacer(1, 0.3*cm))
+        story.append(Image(io.BytesIO(logo_bytes), width=4*cm, height=3*cm))
+    except Exception:
+        story.append(Spacer(1, 3.5*cm))
+    story.append(Paragraph(titulo, styles["TituloReporte"]))
+    story.append(Paragraph(subtitulo, styles["SubtituloReporte"]))
+    story.append(Spacer(1, 0.4*cm))
+
+    # Descripción de métricas (para público no técnico)
+    story.append(Paragraph("Descripción de métricas", styles["Heading2"]))
+    descripciones = [
+        "📊 Impresiones: número de veces que la app fue mostrada en las tiendas o en notificaciones (alcance/visibilidad).",
+        "📥 Descargas: cantidad de instalaciones de la app por usuarios.",
+        "🚀 Lanzamientos: veces que los usuarios abrieron la app luego de instalarla.",
+        "📈 Conversión: relación entre descargas e impresiones (Descargas ÷ Impresiones)."
+    ]
+    for d in descripciones:
+        story.append(Paragraph(d, styles["Normal"]))
+    story.append(Spacer(1, 0.4*cm))
+
+    # KPIs
+    data_kpi = [
+        [Paragraph("👀 Impresiones",styles["KPITexto"]), Paragraph(f"{kpis['imp']:,}",styles["KPITexto"])],
+        [Paragraph("📥 Descargas", styles["KPITexto"]), Paragraph(f"{kpis['dwn']:,}",styles["KPITexto"])],
+        [Paragraph("🚀 Lanzamientos",styles["KPITexto"]), Paragraph(f"{kpis['lnc']:,}",styles["KPITexto"])],
+        [Paragraph("📈 Conversión", styles["KPITexto"]), Paragraph(f"{kpis['conv']:,.2f}%",styles["KPITexto"])],
+        [Paragraph("🧭 Uso por instalación",styles["KPITexto"]), Paragraph(f"{kpis['uso']:,.2f}",styles["KPITexto"])],
+    ]
+    kpi_tbl = Table(data_kpi, colWidths=[7*cm, 7*cm])
+    kpi_tbl.setStyle(TableStyle([
+        ('BOX',(0,0),(-1,-1), 0.5, colors.grey),
+        ('INNERGRID',(0,0),(-1,-1), 0.25, colors.lightgrey),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+        ('FONT',(0,0),(-1,-1),'Helvetica'),
+        ('BACKGROUND',(0,0),(-1,0), colors.whitesmoke)
+    ]))
+    story.append(kpi_tbl); story.append(PageBreak())
+
+    # Gráficos (1 por página)
+    for png in figuras_png:
+        story.append(Image(io.BytesIO(png), width=W-3*cm, height=H-5*cm))
+        story.append(PageBreak())
+
+    # Tabla (primeros 30 registros)
+    story.append(Paragraph("Datos agregados (primeros 30 registros)", styles["Heading2"]))
+    head = list(tabla_df.columns)
+    rows = [head] + tabla_df.head(30).astype(str).values.tolist()
+    tbl = Table(rows, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0), colors.Color(0.12,0.12,0.12)),
+        ('TEXTCOLOR',(0,0),(-1,0), colors.white),
+        ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ('GRID',(0,0),(-1,-1), 0.25, colors.lightgrey),
+        ('FONT',(0,0),(-1,0),'Helvetica-Bold'),
+        ('FONT',(0,1),(-1,-1),'Helvetica'),
+        ('ROWBACKGROUNDS',(0,1),(-1,-1), [colors.whitesmoke, colors.lightgrey]),
+    ]))
+    story.append(tbl)
+
+    # Pie de página con numeración
+    def on_page(canvas, doc):
+        canvas.setFont("Helvetica", 9)
+        canvas.setFillColor(colors.grey)
+        canvas.drawRightString(W-1.2*cm, 1*cm, f"Página {doc.page}")
+
+    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    return buf.getvalue()
+
+with tab4:
+    st.subheader("Generar Reporte PDF profesional")
+    periodo_pdf = st.selectbox("Periodo de tabla PDF", ["Diario","Semanal","Mensual"])
+    def tabla_por_periodo(df, p):
+        return agregar(df, {"Diario":"Día","Semanal":"Semana","Mensual":"Mes"}[p], metricas)
+    tabla_pdf = tabla_por_periodo(df, periodo_pdf)
+
+    # Gráficos para el PDF
+    if tipo_graf=="Líneas":
+        fig1 = px.line(agg, x="Etiqueta", y=metricas_sel, markers=True, title=f"Evolución por {gran.lower()}")
+    else:
+        fig1 = px.bar(agg, x="Etiqueta", y=metricas_sel, barmode="group", title=f"Evolución por {gran.lower()}")
+    fig1.update_layout(xaxis_title="", legend_title="")
+
+    fig2 = px.bar(agg, x="Etiqueta", y=metricas_sel, barmode="group", title="Comparativa")
+    fig2.update_layout(xaxis_title="", legend_title="")
+
+    # Exportar figuras a PNG (kaleido)
+    def plot_to_png(fig, w=1100, h=500, scale=2):
+        return fig.to_image(format="png", width=w, height=h, scale=scale)
+
+    pngs = [plot_to_png(fig1), plot_to_png(fig2)]
+
+    kpis = {"imp": tot_imp, "dwn": tot_dwn, "lnc": tot_lnc, "conv": conv, "uso": uso}
+    subtitulo = f"Rango: {fmt_fecha_es(df['Fecha'].min())} a {fmt_fecha_es(df['Fecha'].max())}  •  Granularidad: {gran}"
+
+    if st.button("🖨️ Generar PDF"):
+        pdf_bytes = build_pdf(LOGO_URL, "📊 Dashboard Evolucion de APP Heaven", subtitulo, kpis, pngs, tabla_pdf)
+        st.download_button("📥 Descargar PDF", data=pdf_bytes,
+                           file_name=f"reporte_{periodo_pdf.lower()}.pdf", mime="application/pdf")
