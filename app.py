@@ -1,5 +1,7 @@
 # app.py
 import io
+from typing import Optional, List, Dict
+
 import requests
 import numpy as np
 import pandas as pd
@@ -11,15 +13,18 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.units import cm
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image,
-                                Table, TableStyle, PageBreak)
+from reportlab.platypus import (
+    SimpleDocTemplate, Paragraph, Spacer, Image,
+    Table, TableStyle, PageBreak
+)
+from reportlab.lib.utils import ImageReader
 
 # =========================
 # Configuración general
 # =========================
 st.set_page_config(page_title="Dashboard Evolucion de APP Heaven", page_icon="📊", layout="wide")
 
-# Logo e imagen del repo (usaremos la misma para portada e imagen destacada de PDF)
+# Logo e imagen del repo (se usa en portada e imagen destacada del PDF)
 LOGO_URL = "https://raw.githubusercontent.com/ale1795/HeavenAPP/main/HVN%20central%20blanco.png"
 
 MESES_LARGO = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
@@ -127,8 +132,6 @@ st.info(f"📅 Datos disponibles: **{data_min}** → **{data_max}**")
 # =========================
 # Filtros superiores (rango inteligente)
 # =========================
-hoy = pd.Timestamp(data_max)
-
 col_gran, col_anio, col_mes, col_sem, col_dia = st.columns([1.2, 1, 1, 1, 1.3], vertical_alignment="bottom")
 with col_gran:
     gran = st.radio("Granularidad", ["Día","Semana","Mes","Año"], horizontal=True)
@@ -299,9 +302,8 @@ resumen = (
     f"Lanzamientos {chip(delta_lnc)}, Conversión {chip(delta_conv)}, Uso/instalación {chip(delta_uso)} "
     f"vs. período anterior ({fmt_fecha_es(pd.to_datetime(ini_prev))} – {fmt_fecha_es(pd.to_datetime(fin_prev))})."
 )
-if cmp_yoy:
+if yoy_block:
     ini_yoy, fin_yoy = yoy_block["RangoYoY"]
-    # extraemos del bloque para describir
     di = yoy_block["Filas"][0][3]; dd = yoy_block["Filas"][1][3]; dl = yoy_block["Filas"][2][3]
     dc = yoy_block["Filas"][3][3]; du = yoy_block["Filas"][4][3]
     resumen += (
@@ -393,73 +395,148 @@ with tab3:
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # =========================
-# PDF profesional (incluye imagen del repo y tabla YoY)
+# PDF profesional (maquetado avanzado)
 # =========================
-def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_image_bytes=None, yoy_block=None):
+def build_pdf(
+    logo_url: str,
+    titulo: str,
+    subtitulo: str,
+    kpis: Dict[str, float],
+    figuras_png: List[bytes],
+    tabla_df: pd.DataFrame,
+    extra_image_bytes: Optional[bytes] = None,
+    yoy_block: Optional[Dict] = None,
+    resumen_texto: Optional[str] = None,
+    deltas: Optional[Dict[str, float]] = None,        # {"imp","dwn","lnc","conv","uso"}
+    deltas_yoy: Optional[Dict[str, float]] = None     # no usado visualmente, pero previsto
+):
+    """Genera PDF con portada, imagen destacada, KPIs, gráficos, YoY y tabla."""
+    # ----- Utils -----
+    def _thousands(x):
+        if isinstance(x, (int, np.integer)): return f"{x:,}"
+        if isinstance(x, float): return f"{x:,.2f}"
+        return str(x)
+    def _delta_chip(x):
+        if x is None or (isinstance(x, float) and (pd.isna(x) or np.isnan(x))): return "—"
+        return f"{x:+.1f}%"
+    def _fit_image_bytes(img_bytes, max_w, max_h):
+        try:
+            ir = ImageReader(io.BytesIO(img_bytes))
+            iw, ih = ir.getSize()
+            ratio = min(max_w / iw, max_h / ih)
+            return Image(io.BytesIO(img_bytes), width=iw * ratio, height=ih * ratio)
+        except Exception:
+            return None
+
+    # ----- Doc -----
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=1.5*cm, bottomMargin=1.5*cm, leftMargin=1.5*cm, rightMargin=1.5*cm)
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            topMargin=1.2*cm, bottomMargin=1.2*cm,
+                            leftMargin=1.5*cm, rightMargin=1.5*cm)
     W, H = A4
+
     styles = getSampleStyleSheet()
     if "TituloReporte" not in styles.byName:
-        styles.add(ParagraphStyle(name="TituloReporte", parent=styles["Heading1"], alignment=1, fontSize=18, spaceAfter=12))
+        styles.add(ParagraphStyle(name="TituloReporte", parent=styles["Heading1"], alignment=1, fontSize=20, spaceAfter=8))
     if "SubtituloReporte" not in styles.byName:
-        styles.add(ParagraphStyle(name="SubtituloReporte", parent=styles["Heading2"], alignment=1, fontSize=11, textColor=colors.grey, spaceAfter=12))
-    if "KPITexto" not in styles.byName:
-        styles.add(ParagraphStyle(name="KPITexto", parent=styles["Normal"], alignment=1, fontSize=12))
+        styles.add(ParagraphStyle(name="SubtituloReporte", parent=styles["Heading2"], alignment=1, fontSize=11, textColor=colors.grey, spaceAfter=6))
+    if "BodySmall" not in styles.byName:
+        styles.add(ParagraphStyle(name="BodySmall", parent=styles["Normal"], fontSize=9, leading=12))
+    if "KPIHead" not in styles.byName:
+        styles.add(ParagraphStyle(name="KPIHead", parent=styles["Normal"], alignment=1, fontSize=9, textColor=colors.grey))
+    if "KPIValue" not in styles.byName:
+        styles.add(ParagraphStyle(name="KPIValue", parent=styles["Normal"], alignment=1, fontSize=16, spaceAfter=4))
+    if "KPISub" not in styles.byName:
+        styles.add(ParagraphStyle(name="KPISub", parent=styles["Normal"], alignment=1, fontSize=9, textColor=colors.grey))
 
-    story=[]
-    # Portada con logo
+    def _header_footer(canvas, _doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.grey)
+        canvas.setStrokeColor(colors.lightgrey)
+        canvas.setLineWidth(0.3)
+        canvas.line(1.5*cm, H-1.0*cm, W-1.5*cm, H-1.0*cm)
+        canvas.drawString(1.5*cm, 0.9*cm, "Dashboard Evolución App Heaven")
+        canvas.drawRightString(W-1.5*cm, 0.9*cm, f"Página {_doc.page}")
+        canvas.restoreState()
+
+    story = []
+
+    # ----- Portada -----
     try:
         logo_bytes = requests.get(logo_url, timeout=10).content
-        story.append(Spacer(1, 0.3*cm))
-        story.append(Image(io.BytesIO(logo_bytes), width=4*cm, height=3*cm))
     except Exception:
-        story.append(Spacer(1, 3.5*cm))
+        logo_bytes = None
+    story.append(Spacer(1, 0.4*cm))
+    if logo_bytes:
+        logo_img = _fit_image_bytes(logo_bytes, max_w=3.8*cm, max_h=3.0*cm)
+        if logo_img: story.append(logo_img)
+        story.append(Spacer(1, 0.2*cm))
     story.append(Paragraph(titulo, styles["TituloReporte"]))
     story.append(Paragraph(subtitulo, styles["SubtituloReporte"]))
-    story.append(Spacer(1, 0.4*cm))
+    sep = Table([[""]], colWidths=[W-3*cm], rowHeights=[0.15*cm])
+    sep.setStyle(TableStyle([('BACKGROUND', (0,0), (-1,-1), colors.lightgrey)]))
+    story.append(sep)
+    story.append(Spacer(1, 0.3*cm))
 
-    # Imagen destacada (usaremos la del repo si no se provee otra)
+    # Imagen destacada (del repo)
     if extra_image_bytes:
-        story.append(Paragraph("Imagen destacada", styles["Heading2"]))
-        story.append(Image(io.BytesIO(extra_image_bytes), width=W-3*cm, height=H/2))
-        story.append(PageBreak())
+        big = _fit_image_bytes(extra_image_bytes, max_w=W-3*cm, max_h=H/2)
+        if big:
+            story.append(Paragraph("Imagen destacada", styles["Heading2"]))
+            story.append(big)
+            story.append(Spacer(1, 0.2*cm))
 
-    # Descripción de métricas
-    story.append(Paragraph("Descripción de métricas", styles["Heading2"]))
-    for d in [
-        "📊 Impresiones: veces que la app fue mostrada (alcance).",
-        "📥 Descargas: instalaciones de la app.",
-        "🚀 Lanzamientos: aperturas de la app.",
-        "📈 Conversión: Descargas ÷ Impresiones.",
-        "🧭 Uso por instalación: Lanzamientos ÷ Descargas."
-    ]:
-        story.append(Paragraph(d, styles["Normal"]))
-    story.append(Spacer(1, 0.4*cm))
+    if resumen_texto:
+        story.append(Paragraph("Resumen ejecutivo", styles["Heading2"]))
+        story.append(Paragraph(resumen_texto, styles["BodySmall"]))
+        story.append(Spacer(1, 0.2*cm))
+    story.append(PageBreak())
 
-    # KPIs
-    data_kpi = [
-        [Paragraph("👀 Impresiones",styles["KPITexto"]), Paragraph(f"{kpis['imp']:,}",styles["KPITexto"])],
-        [Paragraph("📥 Descargas", styles["KPITexto"]), Paragraph(f"{kpis['dwn']:,}",styles["KPITexto"])],
-        [Paragraph("🚀 Lanzamientos",styles["KPITexto"]), Paragraph(f"{kpis['lnc']:,}",styles["KPITexto"])],
-        [Paragraph("📈 Conversión", styles["KPITexto"]), Paragraph(f"{kpis['conv']:,.2f}%",styles["KPITexto"])],
-        [Paragraph("🧭 Uso por instalación",styles["KPITexto"]), Paragraph(f"{kpis['uso']:,.2f}",styles["KPITexto"])],
+    # ----- KPIs en tarjetas -----
+    def _kpi_card(nombre, valor, delta=None):
+        lbl = Paragraph(nombre, styles["KPIHead"])
+        val = Paragraph(_thousands(valor), styles["KPIValue"])
+        if delta is None or (isinstance(delta, float) and pd.isna(delta)):
+            sub = Paragraph("&nbsp;", styles["KPISub"])
+        else:
+            col = colors.green if delta >= 0 else colors.red
+            sub = Paragraph(f"<font color='{col.rgb()}'>({_delta_chip(delta)})</font>", styles["KPISub"])
+        t = Table([[lbl],[val],[sub]], colWidths=[(W-3*cm)/5])
+        t.setStyle(TableStyle([
+            ('BOX',(0,0),(-1,-1), 0.5, colors.lightgrey),
+            ('INNERGRID',(0,0),(-1,-1), 0.25, colors.whitesmoke),
+            ('BACKGROUND',(0,0),(-1,0), colors.whitesmoke),
+            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
+            ('ALIGN',(0,0),(-1,-1),'CENTER'),
+        ]))
+        return t
+
+    cards = [
+        _kpi_card("👀 Impresiones", kpis["imp"], (deltas or {}).get("imp")),
+        _kpi_card("📥 Descargas",   kpis["dwn"], (deltas or {}).get("dwn")),
+        _kpi_card("🚀 Lanzamientos",kpis["lnc"], (deltas or {}).get("lnc")),
+        _kpi_card("📈 Conversión (%)", kpis["conv"], (deltas or {}).get("conv")),
+        _kpi_card("🧭 Uso/instalación", kpis["uso"], (deltas or {}).get("uso")),
     ]
-    kpi_tbl = Table(data_kpi, colWidths=[7*cm, 7*cm])
-    kpi_tbl.setStyle(TableStyle([
-        ('BOX',(0,0),(-1,-1), 0.5, colors.grey),
-        ('INNERGRID',(0,0),(-1,-1), 0.25, colors.lightgrey),
-        ('ALIGN',(0,0),(-1,-1),'CENTER'),
-        ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-    ]))
-    story.append(kpi_tbl); story.append(PageBreak())
+    story.append(Table([cards], colWidths=[(W-3*cm)/5]*5, hAlign='CENTER', spaceBefore=6, spaceAfter=6))
+    story.append(PageBreak())
 
-    # Gráficos
-    for png in figuras_png:
-        story.append(Image(io.BytesIO(png), width=W-3*cm, height=H-5*cm))
+    # ----- Gráficos (2 por página) -----
+    if figuras_png:
+        story.append(Paragraph("Gráficos", styles["Heading2"]))
+        for i in range(0, len(figuras_png), 2):
+            row = []
+            for j in range(i, min(i+2, len(figuras_png))):
+                img = _fit_image_bytes(figuras_png[j], max_w=(W-3*cm)/2 - 0.5*cm, max_h=H-6*cm)
+                if img is None:
+                    img = Image(io.BytesIO(figuras_png[j]), width=(W-3*cm)/2 - 0.5*cm, height=(H-6*cm)/2)
+                row.append(img)
+            story.append(Table([row], colWidths=[(W-3*cm)/2 - 0.5*cm]*len(row)))
+            story.append(Spacer(1, 0.3*cm))
         story.append(PageBreak())
 
-    # Tabla YoY (si aplica)
+    # ----- Tabla YoY -----
     if yoy_block:
         ini_y, fin_y = yoy_block["RangoYoY"]
         story.append(Paragraph(
@@ -469,10 +546,7 @@ def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_im
         )
         filas = [["Métrica", "Actual", "YoY", "Δ%"]]
         for nombre, actual, yoy, delta in yoy_block["Filas"]:
-            filas.append([nombre,
-                          f"{actual:,.2f}" if isinstance(actual, float) else f"{actual:,}",
-                          f"{yoy:,.2f}"    if isinstance(yoy, float)    else f"{yoy:,}",
-                          f"{delta:+.1f}%" if pd.notna(delta) else "–"])
+            filas.append([nombre, _thousands(actual), _thousands(yoy), _delta_chip(delta)])
         tbl_yoy = Table(filas, repeatRows=1, colWidths=[6*cm, 3*cm, 3*cm, 3*cm])
         tbl_yoy.setStyle(TableStyle([
             ('BACKGROUND',(0,0),(-1,0), colors.Color(0.12,0.12,0.12)),
@@ -480,15 +554,20 @@ def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_im
             ('GRID',(0,0),(-1,-1), 0.25, colors.lightgrey),
             ('ALIGN',(1,1),(-1,-1),'CENTER'),
             ('FONT',(0,0),(-1,0),'Helvetica-Bold'),
+            ('ROWBACKGROUNDS',(0,1),(-1,-1), [colors.whitesmoke, colors.lightgrey]),
         ]))
         story.append(tbl_yoy)
         story.append(PageBreak())
 
-    # Tabla de datos (primeros 30)
+    # ----- Tabla de datos (primeros 30) -----
     story.append(Paragraph("Datos agregados (primeros 30 registros)", styles["Heading2"]))
     head = list(tabla_df.columns)
-    rows = [head] + tabla_df.head(30).astype(str).values.tolist()
-    tbl = Table(rows, repeatRows=1)
+    body = tabla_df.head(30).copy()
+    for c in ["Impresiones","Descargas","Lanzamientos"]:
+        if c in body.columns:
+            body[c] = body[c].apply(_thousands)
+    rows = [head] + body.astype(str).values.tolist()
+    tbl = Table(rows, repeatRows=1, colWidths=[(W-3*cm)/len(head)]*len(head))
     tbl.setStyle(TableStyle([
         ('BACKGROUND',(0,0),(-1,0), colors.Color(0.12,0.12,0.12)),
         ('TEXTCOLOR',(0,0),(-1,0), colors.white),
@@ -500,13 +579,7 @@ def build_pdf(logo_url, titulo, subtitulo, kpis, figuras_png, tabla_df, extra_im
     ]))
     story.append(tbl)
 
-    def on_page(canvas, doc):
-        W,H = A4
-        canvas.setFont("Helvetica", 9)
-        canvas.setFillColor(colors.grey)
-        canvas.drawRightString(W-1.2*cm, 1*cm, f"Página {doc.page}")
-
-    doc.build(story, onFirstPage=on_page, onLaterPages=on_page)
+    doc.build(story, onFirstPage=_header_footer, onLaterPages=_header_footer)
     return buf.getvalue()
 
 with tab4:
@@ -528,11 +601,10 @@ with tab4:
 
     # Gráficos YoY por métrica (si está activo)
     figs_yoy = []
-    if cmp_yoy:
-        ini_yoy, fin_yoy = periodo_yoy(pd.to_datetime(ini_r), pd.to_datetime(fin_r))
+    if yoy_block:
+        ini_yoy, fin_yoy = yoy_block["RangoYoY"]
         df_yoy = df_all[(df_all["Fecha"]>=pd.to_datetime(ini_yoy))&(df_all["Fecha"]<=pd.to_datetime(fin_yoy))]
         agg_yoy = agregar(df_yoy, gran, metricas)
-
         for m in metricas:
             comb = pd.DataFrame({"Etiqueta": agg["Etiqueta"], "Actual": agg[m]})
             if len(agg_yoy) == len(agg):
@@ -551,7 +623,7 @@ with tab4:
         return fig.to_image(format="png", width=w, height=h, scale=scale)
 
     pngs = [plot_to_png(fig1)]
-    if cmp_yoy:
+    if yoy_block:
         pngs.extend([plot_to_png(f) for f in figs_yoy])  # un gráfico por métrica
     else:
         pngs.append(plot_to_png(fig2))
@@ -565,6 +637,18 @@ with tab4:
     kpis = {"imp": tot_imp, "dwn": tot_dwn, "lnc": tot_lnc, "conv": conv, "uso": uso}
     subtitulo = f"Rango: {fmt_fecha_es(df['Fecha'].min())} a {fmt_fecha_es(df['Fecha'].max())} • Granularidad: {gran}"
 
+    # Deltas para colorear tarjetas en PDF
+    deltas_pdf = {"imp": delta_imp, "dwn": delta_dwn, "lnc": delta_lnc, "conv": delta_conv, "uso": delta_uso}
+    deltas_yoy_pdf = None
+    if yoy_block:
+        deltas_yoy_pdf = {
+            "imp": yoy_block["Filas"][0][3],
+            "dwn": yoy_block["Filas"][1][3],
+            "lnc": yoy_block["Filas"][2][3],
+            "conv": yoy_block["Filas"][3][3],
+            "uso": yoy_block["Filas"][4][3],
+        }
+
     if st.button("🖨️ Generar PDF"):
         pdf_bytes = build_pdf(
             LOGO_URL,
@@ -573,8 +657,11 @@ with tab4:
             kpis,
             pngs,
             tabla_pdf,
-            extra_image_bytes=extra_image_bytes,  # <- imagen del repo
-            yoy_block=yoy_block                    # <- tabla YoY
+            extra_image_bytes=extra_image_bytes,  # imagen del repo
+            yoy_block=yoy_block,
+            resumen_texto=resumen,
+            deltas=deltas_pdf,
+            deltas_yoy=deltas_yoy_pdf
         )
         st.download_button("📥 Descargar PDF", data=pdf_bytes,
                            file_name=f"reporte_{periodo_pdf.lower()}.pdf", mime="application/pdf")
