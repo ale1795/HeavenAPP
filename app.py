@@ -45,7 +45,7 @@ st.markdown(
         </div>""",
     unsafe_allow_html=True
 )
-st.caption("Monitoreo de Impresiones, Descargas y Lanzamientos — filtros claros, exportación y reportes profesionales.")
+st.caption("Monitoreo de Impresiones, Descargas y Lanzamientos")
 st.divider()
 
 # =========================
@@ -488,3 +488,4 @@ with tab4:
         pdf_bytes = build_pdf(LOGO_URL, "📊 Dashboard Evolucion de APP Heaven", subtitulo, kpis, pngs, tabla_pdf)
         st.download_button("📥 Descargar PDF", data=pdf_bytes,
                            file_name=f"reporte_{periodo_pdf.lower()}.pdf", mime="application/pdf")
+
