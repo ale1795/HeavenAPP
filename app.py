@@ -17,7 +17,7 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-st.title("📊 Dashboard App Iglesia")
+st.title("📊 Dashboard Evolucion App Heaven")
 
 st.markdown("""
 ### ℹ️ ¿Qué significa cada métrica?
@@ -196,4 +196,5 @@ with tab2:
     )
 
 # Fin
+
 
