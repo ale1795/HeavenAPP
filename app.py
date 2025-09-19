@@ -20,7 +20,15 @@ LOGO_URL = "https://raw.githubusercontent.com/ale1795/HeavenAPP/main/HVN%20centr
 MESES_LARGO = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 MESES_ABR_ES = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"]
 DIAS_ABR_ES  = ["lun","mar","mié","jue","vie","sáb","dom"]
-PLAT_NAMES = {"ios":"iOS","android":"Android","apple_tv":"Apple TV","roku":"Roku","web":"Web","ipad":"iPad","iphone":"iPhone","tv":"TV","other":"Otros"}
+PLAT_NAMES = {"ios":"iOS","android":"Android","apple_tv":"Apple TV","roku":"Roku","web":"Web",
+              "ipad":"iPad","iphone":"iPhone","tv":"TV","other":"Otros"}
+
+def fmt_fecha_es(ts, abreviado=True):
+    """Devuelve '01 Ene 2024' o '01 Enero 2024' sin depender del locale."""
+    if pd.isna(ts): return ""
+    d = int(ts.day); m = int(ts.month); y = int(ts.year)
+    mes = MESES_ABR_ES[m-1].capitalize() if abreviado else MESES_LARGO[m-1]
+    return f"{d:02d} {mes} {y}"
 
 st.markdown(
     f"""<div style="text-align:center; margin-bottom:16px;">
@@ -84,11 +92,12 @@ def enriquecer_tiempo(df):
     # Rango de semana (lun-dom)
     df["Semana_inicio"] = df["Fecha"] - pd.to_timedelta(df["Fecha"].dt.weekday, unit="D")
     df["Semana_fin"] = df["Semana_inicio"] + pd.Timedelta(days=6)
-    df["Etiqueta_dia"] = df["Fecha"].dt.strftime("%d %b %Y")
+    # Etiquetas en ESPAÑOL (sin locale)
+    df["Etiqueta_dia"] = df["Fecha"].apply(lambda x: fmt_fecha_es(x, True))
     df["Etiqueta_sem"] = (
         "Sem " + df["Semana"].astype(str) + " (" +
-        df["Semana_inicio"].dt.strftime("%d %b %Y") + " – " +
-        df["Semana_fin"].dt.strftime("%d %b %Y") + ")"
+        df["Semana_inicio"].apply(lambda x: fmt_fecha_es(x, True)) + " – " +
+        df["Semana_fin"].apply(lambda x: fmt_fecha_es(x, True)) + ")"
     )
     df["Etiqueta_mes"] = df["Mes"] + " " + df["Año"].astype(str)
     df["Etiqueta_año"] = df["Año"].astype(str)
@@ -110,9 +119,14 @@ def agregar(df, nivel, cols):
     return g
 
 def variacion_pct(a, b):
-    if b == 0: 
+    if b is None or np.isnan(b) or b == 0: 
+        return np.nan
+    if a is None or np.isnan(a): 
         return np.nan
     return (a-b)/b*100.0
+
+def safe_pct_label(v):
+    return f"{v:+.1f}%" if v==v else "s/d"
 
 def insights(df):
     out = []
@@ -120,18 +134,32 @@ def insights(df):
     conv = (tot_dwn/tot_imp*100) if tot_imp>0 else 0
     uso  = (tot_lnc/tot_dwn) if tot_dwn>0 else 0
     out.append(f"• Conversión: **{conv:,.2f}%**. Uso por instalación: **{uso:,.2f}**.")
+
+    # Variación diaria (último vs anterior)
     tmp = df.set_index("Fecha")[["Impresiones","Descargas","Lanzamientos"]].resample("D").sum()
     if len(tmp) >= 2:
         a, p = tmp.iloc[-1], tmp.iloc[-2]
-        out.append(f"• Variación día a día (último vs previo): Impresiones **{variacion_pct(a['Impresiones'], p['Impresiones']):+.1f}%**, "
-                   f"Descargas **{variacion_pct(a['Descargas'], p['Descargas']):+.1f}%**, "
-                   f"Lanzamientos **{variacion_pct(a['Lanzamientos'], p['Lanzamientos']):+.1f}%**.")
+        out.append(
+            "• Variación día a día (último vs previo): "
+            f"Impresiones **{safe_pct_label(variacion_pct(a['Impresiones'], p['Impresiones']))}**, "
+            f"Descargas **{safe_pct_label(variacion_pct(a['Descargas'], p['Descargas']))}**, "
+            f"Lanzamientos **{safe_pct_label(variacion_pct(a['Lanzamientos'], p['Lanzamientos']))}**."
+        )
+    else:
+        out.append("• Variación día a día: **s/d** (no hay datos suficientes).")
+
+    # Variación mensual
     tmpm = df.set_index("Fecha")[["Impresiones","Descargas","Lanzamientos"]].resample("MS").sum()
     if len(tmpm) >= 2:
         a, p = tmpm.iloc[-1], tmpm.iloc[-2]
-        out.append(f"• Variación mensual: Impresiones **{variacion_pct(a['Impresiones'], p['Impresiones']):+.1f}%**, "
-                   f"Descargas **{variacion_pct(a['Descargas'], p['Descargas']):+.1f}%**, "
-                   f"Lanzamientos **{variacion_pct(a['Lanzamientos'], p['Lanzamientos']):+.1f}%**.")
+        out.append(
+            "• Variación mensual: "
+            f"Impresiones **{safe_pct_label(variacion_pct(a['Impresiones'], p['Impresiones']))}**, "
+            f"Descargas **{safe_pct_label(variacion_pct(a['Descargas'], p['Descargas']))}**, "
+            f"Lanzamientos **{safe_pct_label(variacion_pct(a['Lanzamientos'], p['Lanzamientos']))}**."
+        )
+    else:
+        out.append("• Variación mensual: **s/d** (no hay datos suficientes).")
     return out
 
 # =========================
@@ -189,6 +217,10 @@ umbral_alerta = st.sidebar.slider("Alerta si baja más de (%) vs período anteri
 # =========================
 agg = agregar(df, gran, metricas_sel)
 
+# Mostrar periodo seleccionado arriba (en español)
+periodo_txt = f"**📅 Período:** {fmt_fecha_es(df['Fecha'].min())} – {fmt_fecha_es(df['Fecha'].max())}  |  **Granularidad:** {gran}"
+st.markdown(periodo_txt)
+
 c1,c2,c3,c4 = st.columns(4)
 tot_imp = int(df["Impresiones"].sum()); tot_dwn = int(df["Descargas"].sum()); tot_lnc = int(df["Lanzamientos"].sum())
 conv = (tot_dwn/tot_imp*100) if tot_imp>0 else 0
@@ -206,7 +238,7 @@ if len(agg) >= 2:
         if p[m] > 0:
             cambio = variacion_pct(a[m], p[m])
             if not np.isnan(cambio) and cambio <= -umbral_alerta:
-                alertas.append(f"🚨 **{m}** cayó **{cambio:.1f}%** vs el período anterior.")
+                alertas.append(f"🔴 **{m}** cayó **{cambio:.1f}%** (últ. {gran.lower()}: {a['Etiqueta']} vs prev.: {p['Etiqueta']})")
 if alertas: st.error(" \n".join(alertas))
 else:       st.success("✅ Sin alertas críticas en el período seleccionado.")
 
@@ -295,4 +327,53 @@ def generar_pdf_con_logo(logo_url, kpis, texto_periodo, figuras_png_bytes, tabla
     # KPIs
     c.setFont("Helvetica", 12)
     yk = y-6.0*cm
-    c.drawString
+    c.drawString(2*cm, yk,       f"👀 Impresiones: {kpis['imp']:,}")
+    c.drawString(2*cm, yk-0.7*cm, f"⬇️ Descargas:  {kpis['dwn']:,}")
+    c.drawString(2*cm, yk-1.4*cm, f"🚀 Lanzamientos: {kpis['lnc']:,}")
+    c.drawString(2*cm, yk-2.1*cm, f"📈 Conversión:  {kpis['conv']:,.2f}%")
+    c.drawString(2*cm, yk-2.8*cm, f"🧭 Uso por instalación: {kpis['uso']:,.2f}")
+    c.showPage()
+
+    # Gráficos (1 por página)
+    for i, png in enumerate(figuras_png_bytes):
+        img = ImageReader(io.BytesIO(png))
+        c.drawImage(img, 1.5*cm, 4*cm, width=W-3*cm, height=H-7*cm)
+        c.showPage()
+
+    # Tabla resumida (primeros 30 renglones)
+    c.setFont("Helvetica-Bold", 12); c.drawString(2*cm, H-2.5*cm, "Datos agregados")
+    c.setFont("Helvetica", 9)
+    ytab = H-3.2*cm
+    lines = tabla_df.head(30).to_string(index=False).splitlines()
+    for line in lines:
+        c.drawString(2*cm, ytab, line)
+        ytab -= 0.45*cm
+        if ytab < 2*cm:
+            c.showPage(); ytab = H-2.5*cm
+    c.save()
+    return buf.getvalue()
+
+with tab4:
+    st.subheader("Generar Reporte PDF con logo y gráficos")
+    periodo_pdf = st.selectbox("Periodo de tabla PDF", ["Diario","Semanal","Mensual"], key="pdfp")
+    tabla_pdf = agregar(df, {"Diario":"Día","Semanal":"Semana","Mensual":"Mes"}[periodo_pdf], metricas)
+
+    # 2 gráficos para el PDF: evolución + barras comparativas
+    if tipo_graf == "Líneas":
+        fig_main = px.line(agg, x="Etiqueta", y=metricas_sel, markers=True, title=f"Evolución por {gran.lower()}")
+    else:
+        fig_main = px.bar(agg, x="Etiqueta", y=metricas_sel, barmode="group", title=f"Evolución por {gran.lower()}")
+    fig_main.update_layout(xaxis_title="", legend_title="")
+
+    fig_comp = px.bar(agg, x="Etiqueta", y=metricas_sel, barmode="group", title="Comparativa")
+    fig_comp.update_layout(xaxis_title="", legend_title="")
+
+    pngs = [fig_to_png_bytes(fig_main), fig_to_png_bytes(fig_comp)]
+
+    kpis = {"imp": tot_imp, "dwn": tot_dwn, "lnc": tot_lnc, "conv": conv, "uso": uso}
+    texto_periodo = f"Rango: {fmt_fecha_es(df['Fecha'].min())} a {fmt_fecha_es(df['Fecha'].max())}  •  Granularidad: {gran}"
+
+    if st.button("🖨️ Generar PDF"):
+        pdf_bytes = generar_pdf_con_logo(LOGO_URL, kpis, texto_periodo, pngs, tabla_pdf)
+        st.download_button("📥 Descargar PDF", data=pdf_bytes,
+                           file_name=f"reporte_{periodo_pdf.lower()}.pdf", mime="application/pdf")
