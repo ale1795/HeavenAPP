@@ -1,18 +1,7 @@
 import pandas as pd
 import streamlit as st
-import locale
 
-# ---------- Configuración de idioma ----------
-try:
-    locale.setlocale(locale.LC_TIME, "es_ES.utf8")  # Para Linux/Streamlit Cloud
-except:
-    try:
-        locale.setlocale(locale.LC_TIME, "es_ES")  # Para Windows
-    except:
-        st.warning("No se pudo establecer el idioma a español, puede que los meses sigan en inglés.")
-
-# ---------- Configuración básica ----------
-st.set_page_config(page_title="Dashboard Evolucion App en el Tiempo", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Dashboard Evolucion App Heaven en el tiempo", page_icon="📊", layout="wide")
 
 # ---------- Mostrar logo ----------
 logo_url = "https://raw.githubusercontent.com/ale1795/HeavenAPP/main/HVN%20central%20blanco.png"
@@ -45,7 +34,7 @@ def cargar_y_traducir(path_or_buffer, nombre_valor):
     df = leer_csv(path_or_buffer)
     lower_map = {c.lower(): c for c in df.columns}
     if "date" not in lower_map or "total" not in lower_map:
-        st.error(f"El archivo no tiene columnas esperadas 'date' y 'total'. Columnas encontradas: {list(df.columns)}")
+        st.error(f"El archivo no tiene columnas esperadas 'date' y 'total'. Columnas: {list(df.columns)}")
         st.stop()
 
     df = df.rename(columns={lower_map["date"]: "Fecha", lower_map["total"]: nombre_valor})
@@ -93,8 +82,11 @@ if df.empty:
     st.warning("No hay datos disponibles.")
     st.stop()
 
-# ---------- Crear columna con mes en español ----------
-df["Mes"] = df["Fecha"].dt.strftime("%B %Y")  # Ejemplo: "enero 2024"
+# ---------- Mes en español ----------
+MESES_ES = ["enero","febrero","marzo","abril","mayo","junio",
+            "julio","agosto","septiembre","octubre","noviembre","diciembre"]
+
+df["Mes"] = df["Fecha"].dt.month.map(lambda m: MESES_ES[m-1].capitalize()) + " " + df["Fecha"].dt.year.astype(str)
 
 # ---------- Filtros ----------
 st.sidebar.header("Filtros")
