@@ -4,7 +4,7 @@ import streamlit as st
 # =========================
 # Configuración general
 # =========================
-st.set_page_config(page_title="Dashboard App Iglesia", page_icon="📊", layout="wide")
+st.set_page_config(page_title="Dashboard Evolucion App Heaven ", page_icon="📊", layout="wide")
 
 # Logo arriba (del repo)
 LOGO_URL = "https://raw.githubusercontent.com/ale1795/HeavenAPP/main/HVN%20central%20blanco.png"
@@ -196,3 +196,4 @@ with tab2:
     )
 
 # Fin
+
